@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/ExternalAPIs/">
+    <Project Path="BreakfastAPI/BreakfastAPI.csproj" />
+    <Project Path="DinnerAPI/DinnerAPI.csproj" />
+    <Project Path="LunchAPI/LunchAPI.csproj" />
+  </Folder>
+  <Project Path="FoodMaker/FoodMaker.csproj" />
+</Solution>
