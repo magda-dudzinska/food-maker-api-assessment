@@ -1,0 +1,25 @@
+@host = http://localhost:5221
+
+### Get breakfast ingredients (default time = now)
+GET {{host}}/meals/breakfast
+
+### Get breakfast ingredients at a specific time
+GET {{host}}/meals/breakfast?time=08:30
+
+### Get lunch ingredients
+GET {{host}}/meals/lunch
+
+### Get lunch ingredients at a specific time
+GET {{host}}/meals/lunch?time=12:00
+
+### Get dinner ingredients
+GET {{host}}/meals/dinner
+
+### Get dinner ingredients at a specific time
+GET {{host}}/meals/dinner?time=19:00
+
+### Invalid meal type (expect 400)
+GET {{host}}/meals/brunch
+
+### Invalid time format (expect 400)
+GET {{host}}/meals/breakfast?time=not-a-time

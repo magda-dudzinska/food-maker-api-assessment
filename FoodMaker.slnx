@@ -5,4 +5,5 @@
     <Project Path="LunchAPI/LunchAPI.csproj" />
   </Folder>
   <Project Path="FoodMaker/FoodMaker.csproj" />
+  <Project Path="FoodMaker.Tests/FoodMaker.Tests.csproj" />
 </Solution>

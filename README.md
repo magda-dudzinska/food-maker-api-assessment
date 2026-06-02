@@ -1,281 +1,93 @@
-# Food Maker API — Exercise
+# FoodMaker API
 
-## Goal
+## Overview
 
-Build a REST API for `FoodMaker` that returns a unified list of ingredients for a requested meal.
+FoodMaker is a .NET 10 aggregation API that returns meal ingredients for breakfast, lunch and dinner by querying three independent provider APIs. Each provider has its own contract, serving hours and response format; FoodMaker normalises them behind a single `GET /meals/{mealType}` endpoint. Responses are cached in-memory and outbound calls are protected by a Polly retry pipeline with exponential backoff.
 
-The API must:
-- support `Breakfast`, `Lunch`, and `Dinner`
-- call the correct external provider for the selected meal type
-- handle different provider contracts and response formats
-- return a simple list of ingredient names
-- handle cases where food is not served at the requested time
+## Architecture
 
-## Business Scenario
+The request flows through a layered pipeline: the controller parses and validates input, delegates to `MealService` which routes by `MealType`, and the selected `IMealProvider` calls the external API through an `HttpClient` configured with retry policies. Each provider is composed at startup as `CachedMealProvider` (decorator) wrapping `MealProvider`, which delegates protocol-specific concerns (URL building, response mapping, 400-status semantics) to an `IMealProviderStrategy` implementation.
 
-`FoodMaker` is an aggregator API. It does not store meal data on its own.
+```mermaid
+flowchart LR
+    Client -->|"GET /meals/lunch?time=13:00"| MealsController
+    MealsController --> MealService
+    MealService -->|routes by MealType| CachedMealProvider
+    CachedMealProvider -->|cache miss| MealProvider
+    MealProvider -->|IMealProviderStrategy| Strategy["BreakfastStrategy\nLunchStrategy\nDinnerStrategy"]
+    Strategy -->|builds request path| HttpClient
+    HttpClient -->|"Polly retry\n3 retries, exp backoff + jitter"| ExternalAPI["BreakfastAPI :5234\nLunchAPI :5032\nDinnerAPI :5211"]
+    CachedMealProvider -.->|"cache hit · 5 min TTL"| IMemoryCache
+```
 
-Instead, it must retrieve ingredients from external provider services:
-- `BreakfastAPI`
-- `LunchAPI`
-- `DinnerAPI`
+## How to Run
 
-Each provider:
-- serves food only during specific hours
-- exposes a different endpoint shape
-- returns data in a different response format
+Start all four services (three providers + the aggregator):
 
-Your task is to hide those differences behind one consistent `FoodMaker` API.
+```bash
+dotnet run --project BreakfastAPI &
+dotnet run --project LunchAPI &
+dotnet run --project DinnerAPI &
+dotnet run --project FoodMaker
+```
 
-## Task
+| Service       | HTTP Port |
+|---------------|-----------|
+| FoodMaker     | 5221      |
+| BreakfastAPI  | 5234      |
+| LunchAPI      | 5032      |
+| DinnerAPI     | 5211      |
 
-Implement an endpoint in the `FoodMaker` project that prepares a meal based on:
-- meal type
-- requested time, if provided
+Example request:
 
-If time is not provided, the API should use the current date and time.
+```bash
+curl http://localhost:5221/meals/lunch?time=13:00
+# ["soup","potatoes","salad"]
+```
 
-You may choose the exact endpoint design, but it should be a clear REST API.
+Run tests:
+
+```bash
+dotnet test
+```
+
+## Design Decisions
+
+- **Strategy pattern for providers** -- each external API has a different contract (query string vs path segment, different JSON shapes); strategies encapsulate these differences without conditional logic in the provider.
+- **Decorator-based caching** -- `CachedMealProvider` wraps `MealProvider` transparently, keeping cache logic out of HTTP logic and making it easy to disable or swap.
+- **Only successful results are cached** -- failures are transient by nature; caching them would mask recovery.
+- **Result type instead of exceptions** -- `ProviderResult` carries either ingredients or a typed `ProviderError`, avoiding exception-driven control flow.
+- **`TreatBadRequestAsMealNotServed` flag** -- Lunch and Dinner APIs return 400 for out-of-range hours (a domain concept), while Breakfast returns an empty collection; the flag lets each strategy declare the semantics without branching in shared code.
+- **Polly retry with jitter** -- exponential backoff (2^n seconds) plus random jitter avoids thundering-herd retries against struggling providers.
+- **Scoped `MealService`, singleton providers** -- the service is lightweight and request-scoped; providers hold no request state and share the cache safely.
+
+## Testing Strategy
+
+Tests follow the testing pyramid: a broad base of unit tests covering each component in isolation, with integration tests at the top verifying DI wiring and end-to-end HTTP behaviour.
+
+- **~35 unit tests** -- `MealServiceTests`, `BreakfastProviderTests`, `LunchProviderTests`, `DinnerProviderTests`, `CachedMealProviderTests`, `MealTypeParserTests`. HTTP calls are faked via mock `HttpMessageHandler`; provider dependencies use NSubstitute.
+- **~13 integration tests** -- `ServiceRegistrationTests` (DI container verification) and `MealsEndpointTests` (full request pipeline via `WebApplicationFactory`).
+- **Intentionally not tested:** Polly retry behaviour (tested by the library), the three stub provider APIs (trivial minimal APIs with no domain logic), and `Program.cs` startup beyond what integration tests cover.
+
+## What I'd Add for Production
+
+- **Redis-backed `IDistributedCache`** -- replace in-memory cache for horizontal scaling.
+- **OpenTelemetry tracing** -- with correlation IDs propagated downstream via `traceparent` headers.
+- **`/health` endpoint** -- with provider connectivity checks via `IHealthCheck`.
+- **Circuit breaker** -- Polly `CircuitBreakerAsync` to fail fast when a provider is persistently down.
+- **Structured logging sink** -- Serilog or OpenTelemetry Logs exporting to a central store.
+- **Secrets via Azure Key Vault** -- provider URLs and any future API keys out of `appsettings.json`.
+- **Container images** -- multi-stage Dockerfile per service, orchestrated with Docker Compose.
+- **GitHub Actions deployment** -- CI pipeline with build, test, image push, and environment promotion.
+
+## Extending: Adding a New Provider
+
+1. Create a new `IMealProviderStrategy` implementation (define `MealType`, `ProviderName`, `BuildRequestPath`, `MapResponse`, and `TreatBadRequestAsMealNotServed`).
+2. Add response DTOs in `Providers/Responses/` matching the external API's JSON contract.
+3. Add the new `MealType` enum value.
+4. Add the provider's base URL to `appsettings.json` under `Providers`.
+5. Add the strategy to the `strategies` array in `ServiceCollectionExtensions.AddMealProviders` -- registration, HTTP client, caching, and retry are automatic.
 
 ## AI Usage
 
-You may use AI tools while working on this exercise.
-
-If you do, please share:
-- the tool or tools you used
-- the prompts you used
-- which parts of the solution were AI-assisted
-
-## Supported Meal Types
-
-The API must support:
-- `Breakfast`
-- `Lunch`
-- `Dinner`
-
-Meal type matching may be case-insensitive.
-
-## Provider Contracts
-
-### 1. `BreakfastAPI`
-
-**Purpose:** returns breakfast ingredients.
-
-**Endpoint:**
-- `GET /ingridients?time=HH:mm`
-
-**Serving hours and ingredients:**
-
-| Time range | Ingredients |
-|---|---|
-| `07:00 - 09:00` | `bread`, `eggs`, `onion` |
-| `09:00 - 11:00` | `bread`, `cheese`, `tomato` |
-
-**Example response:**
-
-```json
-{
-  "products": [
-    { "name": "bread" },
-    { "name": "eggs" },
-    { "name": "onion" }
-  ]
-}
-```
-
-**Outside serving hours:**
-- provider returns an empty `products` collection
-
----
-
-### 2. `LunchAPI`
-
-**Purpose:** returns lunch ingredients.
-
-**Endpoint:**
-- `GET /items?hour=12`
-
-**Serving hours and ingredients:**
-
-| Time range | Ingredients |
-|---|---|
-| `12:00 - 14:00` | `soup`, `potatoes`, `salad` |
-| `14:00 - 17:00` | `pizza` |
-
-**Example response:**
-
-```json
-{
-  "items": [
-    "soup",
-    "potatoes",
-    "salad"
-  ]
-}
-```
-
-**Outside serving hours:**
-- provider returns `400 Bad Request`
-
----
-
-### 3. `DinnerAPI`
-
-**Purpose:** returns dinner ingredients.
-
-**Endpoint:**
-- `GET /components/{hour}`
-
-**Serving hours and ingredients:**
-
-| Time range | Ingredients |
-|---|---|
-| `18:00 - 20:00` | `steak`, `rice`, `sauce` |
-| `20:00 - 22:00` | `pasta`, `cheese`, `wine sauce` |
-
-**Example response:**
-
-```json
-{
-  "dinnerSet": {
-    "components": [
-      { "name": "steak" },
-      { "name": "rice" },
-      { "name": "sauce" }
-    ]
-  }
-}
-```
-
-**Outside serving hours:**
-- provider returns `400 Bad Request`
-
-## Required Unified Output
-
-`FoodMaker` must transform provider-specific responses into one simple result.
-
-A successful response should contain only ingredient names.
-
-Example:
-
-```json
-[
-  "bread",
-  "eggs",
-  "onion"
-]
-```
-
-Returning an object wrapper is also acceptable if the ingredient list is clearly exposed, for example:
-
-```json
-{
-  "ingredients": ["bread", "eggs", "onion"]
-}
-```
-
-## Error Handling
-
-Handle at least the following cases:
-- unsupported meal type
-- invalid or missing time value
-- food not served at the requested time
-- downstream provider errors
-
-## Acceptance Criteria
-
-A solution is complete when:
-- `FoodMaker` exposes one endpoint for requesting a meal
-- the endpoint accepts meal type and optional time
-- if time is not provided, the current date and time is used
-- the correct provider is called based on meal type
-- each provider contract is mapped to a unified ingredient list
-- unavailable meal hours are handled correctly
-- invalid requests return meaningful errors
-- the implementation is clean and easy to extend
-
-## Technical Expectations
-
-The solution should:
-- use HTTP calls to communicate with provider APIs
-- keep provider-specific mapping isolated from the main endpoint logic
-- avoid duplicating parsing and error-handling logic where possible
-- be easy to extend with another provider in the future
-
-### Caching
-
-Add caching for provider results.
-
-The caching approach may be simple, but it should:
-- avoid repeated downstream calls for identical requests
-- be scoped by meal type and requested time
-- use a reasonable expiration strategy
-
-### Resilience
-
-Add retry handling for transient downstream failures.
-
-The retry strategy should be conservative and should not mask permanent failures.
-
-## Local Setup
-
-Projects in the solution:
-- `BreakfastAPI`
-- `LunchAPI`
-- `DinnerAPI`
-- `FoodMaker`
-
-Default local URLs from `launchSettings.json`:
-- `BreakfastAPI`: `http://localhost:5234`
-- `LunchAPI`: `http://localhost:5032`
-- `DinnerAPI`: `http://localhost:5211`
-- `FoodMaker`: `http://localhost:5221`
-
-Run all provider APIs together with `FoodMaker` before testing the final endpoint.
-
-## Example Scenarios
-
-### Example 1
-Request:
-- meal type: `Breakfast`
-- time: `08:00`
-
-Expected result:
-
-```json
-["bread", "eggs", "onion"]
-```
-
-### Example 2
-Request:
-- meal type: `Lunch`
-- time: `15:00`
-
-Expected result:
-
-```json
-["pizza"]
-```
-
-### Example 3
-Request:
-- meal type: `Dinner`
-- time: `21:00`
-
-Expected result:
-
-```json
-["pasta", "cheese", "wine sauce"]
-```
-
-### Example 4
-Request:
-- meal type: `Breakfast`
-- time: `06:30`
-
-Expected result:
-- a clear response indicating that breakfast is not served at that time
-
-## Summary
-
-Implement `FoodMaker` as a single API that normalizes three different provider integrations into one consistent meal response.
+See [AI-USAGE.md](AI-USAGE.md) for details on AI tool usage during development.
