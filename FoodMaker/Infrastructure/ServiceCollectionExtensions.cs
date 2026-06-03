@@ -30,12 +30,11 @@ public static class ServiceCollectionExtensions
             })
             .AddPolicyHandler(GetRetryPolicy());
 
-            var capturedStrategy = strategy;
             services.AddSingleton<IMealProvider>(serviceProvider =>
                 new CachedMealProvider(
                     new MealProvider(
                         serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                        capturedStrategy),
+                        strategy),
                     serviceProvider.GetRequiredService<IMemoryCache>()));
         }
 
