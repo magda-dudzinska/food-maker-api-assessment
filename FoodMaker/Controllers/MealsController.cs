@@ -16,10 +16,32 @@ public class MealsController : ControllerBase
         this.mealService = mealService;
     }
 
+    /// <summary>
+    /// Returns the list of ingredients for a given meal type at the specified time.
+    /// </summary>
+    /// <param name="mealType">The meal type: breakfast, lunch or dinner (case-insensitive).</param>
+    /// <param name="recievedTime">Optional serving time in HH:mm format. Defaults to current time.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Sample requests:
+    ///
+    ///     GET /meals/breakfast?time=08:00
+    ///     GET /meals/lunch?time=13:00
+    ///     GET /meals/dinner?time=19:00
+    ///     GET /meals/lunch - uses current time
+    /// </remarks>
+    /// <response code="200">Ingredients list for the requested meal.</response>
+    /// <response code="400">Invalid meal type or time format.</response>
+    /// <response code="404">The requested meal is not served at the given time.</response>
+    /// <response code="502">The upstream meal provider is unavailable.</response>
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
     [HttpGet("{mealType}")]
     public async Task<IActionResult> GetIngredients(
         string mealType,
-        [FromQuery(Name = "time")] string? time,
+        [FromQuery(Name = "time")] string? recievedTime,
         CancellationToken cancellationToken)
     {
         if (!MealTypeParser.TryParse(mealType, out var parsedMealType))
@@ -27,20 +49,20 @@ public class MealsController : ControllerBase
             return BadRequest(new { error = $"Unsupported meal type: '{mealType}'" });
         }
 
-        TimeOnly parsedTime;
-        if (time is null)
+        TimeOnly mealTime;
+        if (recievedTime is null)
         {
-            parsedTime = TimeOnly.FromDateTime(DateTime.Now);
+            mealTime = TimeOnly.FromDateTime(DateTime.Now);
         }
         else
         {
-            if (!TimeOnly.TryParse(time, out parsedTime))
+            if (!TimeOnly.TryParse(recievedTime, out mealTime))
             {
-                return BadRequest(new { error = $"Invalid time format: '{time}'" });
+                return BadRequest(new { error = $"Invalid time format: '{recievedTime}'" });
             }
         }
 
-        var result = await mealService.GetIngredientsAsync(parsedMealType, parsedTime, cancellationToken);
+        var result = await mealService.GetIngredientsAsync(parsedMealType, mealTime, cancellationToken);
 
         if (result.IsSuccess)
         {
